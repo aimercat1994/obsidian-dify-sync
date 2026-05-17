@@ -1,8 +1,7 @@
-import { Notice, TFile, Vault } from 'obsidian';
+import { Notice, TFile } from 'obsidian';
 import { DifyClient } from './dify-client';
 import type DifySyncPlugin from './main';
 
-/** Mapping file: obsidianPath -> difyDocumentId */
 interface PathMapping {
   [obsidianPath: string]: string;
 }
@@ -39,7 +38,6 @@ export class SyncEngine {
     return file.path.startsWith(normalized);
   }
 
-  /** Load the path→docId mapping from data.json */
   async loadMapping(): Promise<void> {
     const data = (await this.plugin.loadData()) as Record<string, unknown> | null;
     if (data && data.mapping) {
@@ -47,15 +45,14 @@ export class SyncEngine {
     }
   }
 
-  /** Save the path→docId mapping to data.json */
   async saveMapping(): Promise<void> {
     await this.plugin.saveData({ mapping: this.mapping });
   }
 
-  /** Default sync: create a new document */
+  /** 新建文件 → 在 Dify 中创建文档 */
   async onFileCreated(file: TFile): Promise<void> {
     if (this.syncing || !this.isInScope(file)) return;
-    if (this.mapping[file.path]) return; // already synced
+    if (this.mapping[file.path]) return;
 
     const settings = this.plugin.settings;
     if (!settings.endpoint || !settings.apiKey || !settings.datasetId) return;
@@ -69,22 +66,21 @@ export class SyncEngine {
       this.mapping[file.path] = resp.document.id;
       await this.saveMapping();
 
-      new Notice(`Dify Sync: Created "${name}"`);
+      new Notice(`Dify Sync：已创建「${name}」`);
     } catch (e) {
-      console.error('Dify Sync: create failed for', file.path, e);
-      new Notice(`Dify Sync: Failed to create "${file.basename}"`);
+      console.error('Dify Sync：创建失败', file.path, e);
+      new Notice(`Dify Sync：创建「${file.basename}」失败`);
     } finally {
       this.syncing = false;
     }
   }
 
-  /** File content changed → update Dify document */
+  /** 文件修改 → 更新 Dify 文档 */
   async onFileModified(file: TFile): Promise<void> {
     if (this.syncing || !this.isInScope(file)) return;
 
     const docId = this.mapping[file.path];
     if (!docId) {
-      // Not yet synced — treat as create
       await this.onFileCreated(file);
       return;
     }
@@ -98,16 +94,16 @@ export class SyncEngine {
       const name = file.basename + '.' + file.extension;
 
       await this.getClient().updateDocument(docId, name, content, settings.docLanguage);
-      console.log(`Dify Sync: Updated "${name}"`);
+      console.log(`Dify Sync：已更新「${name}」`);
     } catch (e) {
-      console.error('Dify Sync: update failed for', file.path, e);
-      new Notice(`Dify Sync: Failed to update "${file.basename}"`);
+      console.error('Dify Sync：更新失败', file.path, e);
+      new Notice(`Dify Sync：更新「${file.basename}」失败`);
     } finally {
       this.syncing = false;
     }
   }
 
-  /** File deleted → remove from Dify */
+  /** 文件删除 → 删除 Dify 文档 */
   async onFileDeleted(file: TFile): Promise<void> {
     if (this.syncing || !this.isInScope(file)) return;
 
@@ -123,16 +119,16 @@ export class SyncEngine {
       delete this.mapping[file.path];
       await this.saveMapping();
 
-      new Notice(`Dify Sync: Deleted "${file.basename}"`);
+      new Notice(`Dify Sync：已删除「${file.basename}」`);
     } catch (e) {
-      console.error('Dify Sync: delete failed for', file.path, e);
-      new Notice(`Dify Sync: Failed to delete "${file.basename}"`);
+      console.error('Dify Sync：删除失败', file.path, e);
+      new Notice(`Dify Sync：删除「${file.basename}」失败`);
     } finally {
       this.syncing = false;
     }
   }
 
-  /** File renamed → delete old Dify doc + create new (Dify has no rename API) */
+  /** 文件重命名 → 删旧 + 建新 */
   async onFileRenamed(file: TFile, oldPath: string): Promise<void> {
     if (this.syncing) return;
 
@@ -151,13 +147,11 @@ export class SyncEngine {
     try {
       this.syncing = true;
 
-      // Delete old document if it existed
       if (oldDocId && wasInScope) {
         await this.getClient().deleteDocument(oldDocId);
         delete this.mapping[oldPath];
       }
 
-      // Create new document if now in scope
       if (inScope && file instanceof TFile) {
         const content = await this.plugin.app.vault.read(file);
         const name = file.basename + '.' + file.extension;
@@ -166,38 +160,38 @@ export class SyncEngine {
       }
 
       await this.saveMapping();
-      new Notice(`Dify Sync: Renamed "${file.basename}"`);
+      new Notice(`Dify Sync：已重命名「${file.basename}」`);
     } catch (e) {
-      console.error('Dify Sync: rename failed', oldPath, '→', file.path, e);
-      new Notice(`Dify Sync: Failed to handle rename`);
+      console.error('Dify Sync：重命名失败', oldPath, '→', file.path, e);
+      new Notice('Dify Sync：重命名处理失败');
     } finally {
       this.syncing = false;
     }
   }
 
-  /** One-shot full sync: push all Obsidian files to Dify */
+  /** 全量同步 */
   async fullSync(): Promise<void> {
     const settings = this.plugin.settings;
     if (!settings.endpoint || !settings.apiKey || !settings.datasetId) {
-      new Notice('Dify Sync: Please configure API endpoint and key first.');
+      new Notice('Dify Sync：请先配置 API 端点和 Key');
       return;
     }
 
     this.syncing = true;
-    const notice = new Notice('Dify Sync: Starting full sync...', 0);
+    const notice = new Notice('Dify Sync：正在全量同步…', 0);
     let created = 0;
     let updated = 0;
     let deleted = 0;
 
     try {
-      // Fetch all existing Dify documents
       let difyDocs: { id: string; name: string }[];
       try {
         const allDocs = await this.getClient().listAllDocuments();
         difyDocs = allDocs.map(d => ({ id: d.id, name: d.name }));
       } catch (e) {
-        console.error('Dify Sync: Failed to list Dify documents', e);
-        new Notice('Dify Sync: Failed to connect. Check your settings.');
+        console.error('Dify Sync：获取 Dify 文档列表失败', e);
+        notice.hide();
+        new Notice('Dify Sync：连接失败，请检查设置');
         return;
       }
 
@@ -206,14 +200,12 @@ export class SyncEngine {
         difyByName.set(d.name, d.id);
       }
 
-      // Get all Obsidian markdown files in scope
       const files = this.plugin.app.vault.getMarkdownFiles()
         .filter(f => this.isInScope(f));
 
       const obsidianNames = new Set<string>();
       const newMapping: PathMapping = {};
 
-      // Create/Update
       for (const file of files) {
         const name = file.basename + '.' + file.extension;
         obsidianNames.add(name);
@@ -222,11 +214,9 @@ export class SyncEngine {
         const content = await this.plugin.app.vault.read(file);
 
         if (existingDocId) {
-          // Update existing
           await this.getClient().updateDocument(existingDocId, name, content, settings.docLanguage);
           updated++;
         } else {
-          // Create new
           const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
           newMapping[file.path] = resp.document.id;
           created++;
@@ -236,14 +226,13 @@ export class SyncEngine {
         newMapping[file.path] = existingDocId;
       }
 
-      // Delete docs that are on Dify but not in Obsidian
       difyByName.forEach(async (docId, name) => {
         if (!obsidianNames.has(name)) {
           try {
             await this.getClient().deleteDocument(docId);
             deleted++;
           } catch (e) {
-            console.error('Dify Sync: Failed to delete stale doc', name, e);
+            console.error('Dify Sync：清理多余文档失败', name, e);
           }
         }
       });
@@ -252,11 +241,11 @@ export class SyncEngine {
       await this.saveMapping();
 
       notice.hide();
-      new Notice(`Dify Sync: ${created} created, ${updated} updated, ${deleted} deleted`);
+      new Notice(`Dify Sync：新增 ${created}，更新 ${updated}，删除 ${deleted}`);
     } catch (e) {
       notice.hide();
-      console.error('Dify Sync: Full sync failed', e);
-      new Notice('Dify Sync: Full sync failed. See console for details.');
+      console.error('Dify Sync：全量同步失败', e);
+      new Notice('Dify Sync：全量同步失败，详见控制台');
     } finally {
       this.syncing = false;
     }

@@ -13,13 +13,13 @@ export class DifySyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Dify Sync Settings' });
+    containerEl.createEl('h2', { text: 'Dify 同步设置' });
 
     new Setting(containerEl)
-      .setName('Dify API Endpoint')
-      .setDesc('Your Dify instance base URL, e.g. http://192.168.1.10:1180/v1')
+      .setName('Dify API 端点')
+      .setDesc('Dify 服务的基础地址，例如 http://192.168.1.10:1180/v1')
       .addText(text => text
-        .setPlaceholder('http://localhost:5001/v1')
+        .setPlaceholder('http://localhost/v1')
         .setValue(this.plugin.settings.endpoint)
         .onChange(async (value) => {
           this.plugin.settings.endpoint = value.replace(/\/+$/, '');
@@ -27,8 +27,8 @@ export class DifySyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Knowledge Base API Key')
-      .setDesc('From Dify → Knowledge → Service API → API Key')
+      .setName('知识库 API Key')
+      .setDesc('在 Dify → 知识库 → Service API → API Key 中创建')
       .addText(text => {
         text.setPlaceholder('dataset-xxxxxxxxxxxx')
           .setValue(this.plugin.settings.apiKey);
@@ -41,8 +41,8 @@ export class DifySyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Knowledge Base ID')
-      .setDesc('The dataset ID from Dify knowledge base URL')
+      .setName('知识库 ID')
+      .setDesc('Dify 知识库 URL 中的 UUID')
       .addText(text => text
         .setPlaceholder('xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx')
         .setValue(this.plugin.settings.datasetId)
@@ -52,8 +52,8 @@ export class DifySyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Sync Folder')
-      .setDesc('Vault folder to sync. Use "/" for entire vault, or e.g. "notes/" for a subfolder.')
+      .setName('同步文件夹')
+      .setDesc('Vault 中要同步的文件夹路径。"/" 表示整个 vault，"笔记/" 表示仅该子目录')
       .addText(text => text
         .setPlaceholder('/')
         .setValue(this.plugin.settings.syncFolder)
@@ -63,12 +63,12 @@ export class DifySyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Document Language')
-      .setDesc('Language hint for Dify processing optimization')
+      .setName('文档语言')
+      .setDesc('用于 Dify 分词处理优化')
       .addDropdown(dropdown => dropdown
-        .addOption('Chinese', 'Chinese')
-        .addOption('English', 'English')
-        .addOption('Japanese', 'Japanese')
+        .addOption('Chinese', '中文')
+        .addOption('English', '英文')
+        .addOption('Japanese', '日文')
         .setValue(this.plugin.settings.docLanguage)
         .onChange(async (value) => {
           this.plugin.settings.docLanguage = value;
@@ -76,8 +76,8 @@ export class DifySyncSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Auto Sync')
-      .setDesc('Automatically sync changes when files are created, modified, or deleted.')
+      .setName('自动同步')
+      .setDesc('文件新增、修改、删除时自动同步到 Dify')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.autoSync)
         .onChange(async (value) => {
@@ -90,18 +90,18 @@ export class DifySyncSettingTab extends PluginSettingTab {
           }
         }));
 
-    containerEl.createEl('h3', { text: 'Actions' });
+    containerEl.createEl('h3', { text: '操作' });
 
     new Setting(containerEl)
-      .setName('Full Sync')
-      .setDesc('Sync all documents in the configured folder to Dify (one-time).')
+      .setName('全量同步')
+      .setDesc('将同步文件夹中的所有笔记推送到 Dify，并清理 Dify 端多余文档')
       .addButton(button => button
-        .setButtonText('Sync Now')
+        .setButtonText('立即同步')
         .onClick(async () => {
           button.setDisabled(true);
-          button.setButtonText('Syncing...');
+          button.setButtonText('同步中…');
           await this.plugin.syncEngine.fullSync();
-          button.setButtonText('Sync Now');
+          button.setButtonText('立即同步');
           button.setDisabled(false);
         }));
   }

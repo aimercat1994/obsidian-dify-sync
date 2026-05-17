@@ -9,64 +9,53 @@ export default class DifySyncPlugin extends Plugin {
   private eventRefs: (() => void)[] = [];
 
   async onload(): Promise<void> {
-    // Load settings
     await this.loadSettings();
 
-    // Initialize sync engine
     this.syncEngine = new SyncEngine(this);
     await this.syncEngine.loadMapping();
 
-    // Register settings tab
     this.addSettingTab(new DifySyncSettingTab(this.app, this));
 
-    // Register commands
     this.addCommand({
       id: 'full-sync',
-      name: 'Full sync to Dify',
+      name: '全量同步到 Dify',
       callback: () => this.syncEngine.fullSync(),
     });
 
     this.addCommand({
       id: 'sync-current-file',
-      name: 'Sync current file to Dify',
+      name: '同步当前文件到 Dify',
       editorCallback: async (_editor, view) => {
         if (view.file) {
           await this.syncEngine.onFileModified(view.file);
         } else {
-          new Notice('Dify Sync: No file open');
+          new Notice('Dify Sync：未打开文件');
         }
       },
     });
 
-    // Register test connection command
     this.addCommand({
       id: 'test-connection',
-      name: 'Test Dify connection',
+      name: '测试 Dify 连接',
       callback: async () => {
         const ok = await this.syncEngine.getClient().testConnection();
-        if (ok) {
-          new Notice('Dify Sync: Connection OK ✓');
-        } else {
-          new Notice('Dify Sync: Connection FAILED ✗');
-        }
+        new Notice(ok ? 'Dify Sync：连接成功 ✓' : 'Dify Sync：连接失败 ✗');
       },
     });
 
-    // If auto-sync was on, start it
     if (this.settings.autoSync) {
       this.startAutoSync();
     }
 
-    // Status bar
     const statusBar = this.addStatusBarItem();
-    statusBar.createEl('span', { text: '📡 Dify Sync' });
+    statusBar.createEl('span', { text: '📡 Dify 同步' });
   }
 
   onunload(): void {
     this.stopAutoSync();
   }
 
-  // ─── Settings ────────────────────────────────────────────────
+  // ─── 设置 ────────────────────────────────────────────────────
 
   async loadSettings(): Promise<void> {
     const data = (await this.loadData()) as Record<string, unknown> | null;
@@ -74,24 +63,21 @@ export default class DifySyncPlugin extends Plugin {
   }
 
   async saveSettings(): Promise<void> {
-    // Preserve mapping when saving settings
     const existingData = (await this.loadData()) as Record<string, unknown> | null;
     await this.saveData({
       settings: this.settings,
       mapping: existingData?.mapping ?? {},
     });
-    // Invalidate client so it picks up new settings
     this.syncEngine.invalidateClient();
   }
 
-  // ─── Auto-sync event wiring ─────────────────────────────────
+  // ─── 自动同步事件 ────────────────────────────────────────────
 
   startAutoSync(): void {
     this.stopAutoSync();
 
     const vault = this.app.vault;
 
-    // Attach via registerEvent so cleanup is automatic
     const onModify = (...args: unknown[]) => {
       const file = args[0] as TAbstractFile;
       if (file instanceof TFile) {
@@ -114,13 +100,11 @@ export default class DifySyncPlugin extends Plugin {
       }
     };
 
-    // Hook vault events
     vault.on('create', onModify);
     vault.on('modify', onModify);
     vault.on('delete', onDelete);
     vault.on('rename', onRename);
 
-    // Store for cleanup
     this.eventRefs = [
       () => vault.off('create', onModify),
       () => vault.off('modify', onModify),
@@ -133,8 +117,6 @@ export default class DifySyncPlugin extends Plugin {
     for (const off of this.eventRefs) off();
     this.eventRefs = [];
   }
-
-  // ─── Data save override ─────────────────────────────────────
 
   async saveData(data: unknown): Promise<void> {
     await super.saveData(data);

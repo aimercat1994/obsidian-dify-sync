@@ -3,7 +3,7 @@
   "name": "Dify Sync",
   "version": "1.0.0",
   "minAppVersion": "1.5.0",
-  "description": "Sync Obsidian notes to Dify knowledge base. Creates, updates, and deletes documents in Dify to mirror your vault.",
+  "description": "将 Obsidian 笔记同步到 Dify 知识库。以 Obsidian 为数据源，自动创建、更新、删除 Dify 中的文档。",
   "author": "aimercat",
   "authorUrl": "https://github.com/aimercat1994",
   "isDesktopOnly": false
