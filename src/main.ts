@@ -31,6 +31,12 @@ export default class DifySyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'cancel-sync',
+      name: '取消同步',
+      callback: () => this.syncEngine.cancelSync(),
+    });
+
+    this.addCommand({
       id: 'sync-current-file',
       name: '同步当前文件到 Dify',
       editorCallback: async (_editor, view) => {

@@ -23,6 +23,8 @@ export class SyncEngine {
   private client: DifyClient | null = null;
   private mapping: PathMappingV2 = {};
   private syncing = false;
+  /** 并发取消标志，由取消命令设置 */
+  private cancelFlag = false;
   /** 上次同步时间戳（毫秒），用于增量同步 */
   private lastSyncTime = 0;
   /** 防抖计时器：file.path → timeoutId */
@@ -47,6 +49,52 @@ export class SyncEngine {
 
   invalidateClient(): void {
     this.client = null;
+  }
+
+  /** 取消正在进行的同步 */
+  cancelSync(): void {
+    if (this.syncing) {
+      this.cancelFlag = true;
+      new Notice('Dify Sync：正在取消同步…');
+    }
+  }
+
+  // ─── 并发池 ────────────────────────────────────────────────────
+
+  /**
+   * 并发执行异步任务，最多同时运行 concurrency 个。
+   * 每次启动新任务前检查 cancelFlag，触发取消时跳过剩余任务。
+   */
+  private async runWithPool<T>(
+    tasks: (() => Promise<T>)[],
+    concurrency: number
+  ): Promise<{ results: T[]; cancelled: boolean }> {
+    const results: T[] = new Array(tasks.length);
+    let nextIndex = 0;
+    let cancelled = false;
+
+    const worker = async (): Promise<void> => {
+      while (nextIndex < tasks.length) {
+        if (this.cancelFlag) {
+          cancelled = true;
+          return;
+        }
+        const i = nextIndex++;
+        try {
+          results[i] = await tasks[i]();
+        } catch (e) {
+          throw e;  // 向上抛给 Promise.all 处理
+        }
+      }
+    };
+
+    const workers = Array.from(
+      { length: Math.min(concurrency, tasks.length) },
+      () => worker()
+    );
+
+    await Promise.all(workers);
+    return { results, cancelled: cancelled || this.cancelFlag };
   }
 
   // ─── 内容 Hash ─────────────────────────────────────────────────
@@ -378,6 +426,7 @@ export class SyncEngine {
     }
 
     this.syncing = true;
+    this.cancelFlag = false;
     const notice = new Notice('Dify Sync：正在全量同步…', 0);
     let created = 0;
     let updated = 0;
@@ -403,7 +452,6 @@ export class SyncEngine {
       for (const d of difyDocs) {
         difyByPath.set(d.name, d.id);
         difyDocIds.add(d.id);
-        // 如果 Dify 文档名不含 /，可能是旧版格式，也注册到旧名索引
         if (!d.name.includes('/')) {
           difyByOldName.set(d.name, d.id);
         }
@@ -416,44 +464,98 @@ export class SyncEngine {
       const newMapping: PathMappingV2 = {};
       const total = files.length;
 
+      // 为每个文件创建 task 工厂函数
+      const tasks = files.map((file, index) => {
+        const pathName = this.getDocName(file);
+        obsidianPathNames.add(pathName);
+        return async () => {
+          // 匹配优先级：路径名 → 旧版文件名 → mapping ID（已验证）
+          const existingEntry = this.mapping[file.path];
+          const mappingDocId = existingEntry?.docId;
+          const existingDocId = difyByPath.get(pathName)
+            || difyByOldName.get(this.getOldDocName(file))
+            || (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
+
+          const content = await this.plugin.app.vault.read(file);
+          const hash = await this.hashContent(content);
+
+          return {
+            file,
+            pathName,
+            existingEntry,
+            existingDocId,
+            content,
+            hash,
+            index,
+          };
+        };
+      });
+
+      // 并发执行（计算阶段），非 I/O 不占并发——实际读文件已经在上面的 task 里了
+      // 这里直接构建处理任务列表
+      const processTasks: (() => Promise<{ action: 'skip' | 'update' | 'create'; file: TFile; pathName: string; docId?: string; hash: string }>)[] = [];
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const pathName = this.getDocName(file);
-        const oldName = this.getOldDocName(file);
-        obsidianPathNames.add(pathName);
-
-        this.updateProgress(notice, `全量同步中… ${i + 1}/${total}`);
-
-        // 匹配优先级：路径名 → 旧版文件名 → mapping ID（已验证）
         const existingEntry = this.mapping[file.path];
         const mappingDocId = existingEntry?.docId;
         const existingDocId = difyByPath.get(pathName)
-          || difyByOldName.get(oldName)
+          || difyByOldName.get(this.getOldDocName(file))
           || (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
 
-        const content = await this.plugin.app.vault.read(file);
-        const hash = await this.hashContent(content);
+        processTasks.push(async () => {
+          const content = await this.plugin.app.vault.read(file);
+          const hash = await this.hashContent(content);
 
-        if (existingDocId) {
-          // 内容没变 → 跳过
-          if (existingEntry && hash === existingEntry.contentHash) {
-            newMapping[file.path] = existingEntry;
-            skipped++;
-            continue;
+          if (existingDocId) {
+            if (existingEntry && hash === existingEntry.contentHash) {
+              return { action: 'skip' as const, file, pathName, docId: existingDocId, hash };
+            }
+            await this.getClient().updateDocument(existingDocId, pathName, content, settings.docLanguage);
+            return { action: 'update' as const, file, pathName, docId: existingDocId, hash };
+          } else {
+            const resp = await this.getClient().createDocument(pathName, content, settings.docLanguage);
+            return { action: 'create' as const, file, pathName, docId: resp.document.id, hash };
           }
-          // 更新文档（同时用路径名，如果旧版 Dify 文档名不含 / 则顺便完成迁移）
-          await this.getClient().updateDocument(existingDocId, pathName, content, settings.docLanguage);
-          newMapping[file.path] = { docId: existingDocId, contentHash: hash };
+        });
+      }
+
+      const poolResult = await this.runWithPool(processTasks, settings.maxConcurrency);
+
+      // 处理结果
+      for (const result of poolResult.results) {
+        if (!result) continue;
+        const { action, file, docId, hash } = result;
+        if (action === 'skip') {
+          newMapping[file.path] = this.mapping[file.path];
+          skipped++;
+        } else if (action === 'update') {
+          newMapping[file.path] = { docId: docId!, contentHash: hash };
           updated++;
         } else {
-          const resp = await this.getClient().createDocument(pathName, content, settings.docLanguage);
-          newMapping[file.path] = { docId: resp.document.id, contentHash: hash };
+          newMapping[file.path] = { docId: docId!, contentHash: hash };
           created++;
         }
       }
 
-      // 清理 Dify 端多余文档（按路径名比对）
-      difyByPath.forEach(async (docId, name) => {
+      // 进度更新
+      const processed = created + updated + skipped;
+      this.updateProgress(notice, poolResult.cancelled
+        ? `已取消（完成 ${processed}/${total}）`
+        : `全量同步完成 ${processed}/${total}`);
+
+      if (poolResult.cancelled) {
+        this.mapping = { ...this.mapping, ...newMapping };
+        await this.saveMapping();
+        notice.hide();
+        new Notice(`Dify Sync：已取消（新增 ${created}，更新 ${updated}，跳过 ${skipped}）`);
+        return;
+      }
+
+      // 清理 Dify 端多余文档
+      for (const [name, docId] of difyByPath) {
+        if (this.cancelFlag) break;
         if (!obsidianPathNames.has(name)) {
           try {
             await this.getClient().deleteDocument(docId);
@@ -462,7 +564,7 @@ export class SyncEngine {
             console.error('Dify Sync：清理多余文档失败', name, e);
           }
         }
-      });
+      }
 
       this.mapping = newMapping;
       await this.saveMapping();
@@ -475,6 +577,7 @@ export class SyncEngine {
       new Notice('Dify Sync：全量同步失败，详见控制台');
     } finally {
       this.syncing = false;
+      this.cancelFlag = false;
       this.resetStatusBar();
     }
   }
@@ -490,6 +593,7 @@ export class SyncEngine {
     }
 
     this.syncing = true;
+    this.cancelFlag = false;
     const notice = new Notice('Dify Sync：正在增量同步…', 0);
     let created = 0;
     let updated = 0;
@@ -514,46 +618,69 @@ export class SyncEngine {
       }
 
       const total = changed.length;
-      for (let i = 0; i < changed.length; i++) {
-        const file = changed[i];
-        this.updateProgress(notice, `增量同步中… ${i + 1}/${total}`);
-        const name = this.getDocName(file);
-        const content = await this.plugin.app.vault.read(file);
-        const hash = await this.hashContent(content);
 
-        const existingEntry = this.mapping[file.path];
+      const processTasks = changed.map((file) => {
+        return async () => {
+          const name = this.getDocName(file);
+          const content = await this.plugin.app.vault.read(file);
+          const hash = await this.hashContent(content);
 
-        if (existingEntry) {
-          // 内容没变 → 跳过（可能是被 Obsidian 自动保存触发过 mtime 更新）
-          if (hash === existingEntry.contentHash) {
-            skipped++;
-            continue;
-          }
+          const existingEntry = this.mapping[file.path];
 
-          // ── 冲突检测（keep_dify 策略）──
-          if (settings.conflictStrategy === 'keep_dify') {
-            const conflict = await this.checkDifyConflict(existingEntry.docId, existingEntry.contentHash);
-            if (conflict) {
-              console.log(`Dify Sync：冲突跳过「${name}」（Dify 端已被外部修改）`);
-              skipped++;
-              continue;
+          if (existingEntry) {
+            if (hash === existingEntry.contentHash) {
+              return { action: 'skip' as const, file, name, hash };
             }
-          }
 
-          // 内容变了 → 更新
-          await this.getClient().updateDocument(
-            existingEntry.docId, name, content, settings.docLanguage
-          );
-          existingEntry.contentHash = hash;
+            if (settings.conflictStrategy === 'keep_dify') {
+              const conflict = await this.checkDifyConflict(existingEntry.docId, existingEntry.contentHash);
+              if (conflict) {
+                console.log(`Dify Sync：冲突跳过「${name}」（Dify 端已被外部修改）`);
+                return { action: 'skip' as const, file, name, hash };
+              }
+            }
+
+            await this.getClient().updateDocument(
+              existingEntry.docId, name, content, settings.docLanguage
+            );
+            return { action: 'update' as const, file, name, hash, docId: existingEntry.docId };
+          } else {
+            const resp = await this.getClient().createDocument(
+              name, content, settings.docLanguage
+            );
+            return { action: 'create' as const, file, name, hash, docId: resp.document.id };
+          }
+        };
+      });
+
+      const poolResult = await this.runWithPool(processTasks, settings.maxConcurrency);
+
+      for (const result of poolResult.results) {
+        if (!result) continue;
+        const { action, file, hash, docId } = result;
+        if (action === 'skip') {
+          skipped++;
+        } else if (action === 'update') {
+          const entry = this.mapping[file.path];
+          if (entry) entry.contentHash = hash;
           updated++;
         } else {
-          // 新文件 → 创建
-          const resp = await this.getClient().createDocument(
-            name, content, settings.docLanguage
-          );
-          this.mapping[file.path] = { docId: resp.document.id, contentHash: hash };
+          this.mapping[file.path] = { docId: docId!, contentHash: hash };
           created++;
         }
+      }
+
+      const processed = created + updated + skipped;
+      this.updateProgress(notice, poolResult.cancelled
+        ? `已取消（完成 ${processed}/${total}）`
+        : `增量同步完成 ${processed}/${total}`);
+
+      if (poolResult.cancelled) {
+        this.lastSyncTime = syncStartTime;
+        await this.saveMapping();
+        notice.hide();
+        new Notice(`Dify Sync：已取消（新增 ${created}，更新 ${updated}，跳过 ${skipped}）`);
+        return;
       }
 
       this.lastSyncTime = syncStartTime;
@@ -567,6 +694,7 @@ export class SyncEngine {
       new Notice('Dify Sync：增量同步失败，详见控制台');
     } finally {
       this.syncing = false;
+      this.cancelFlag = false;
       this.resetStatusBar();
     }
   }

@@ -113,6 +113,18 @@ export class DifySyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl)
+      .setName('最大并发数')
+      .setDesc('同时发往 Dify 的 API 请求数。提高可加速大量同步，但太高可能触发限流。推荐 3-5')
+      .addSlider(slider => slider
+        .setLimits(1, 10, 1)
+        .setValue(this.plugin.settings.maxConcurrency)
+        .setDynamicTooltip()
+        .onChange(async (value) => {
+          this.plugin.settings.maxConcurrency = value;
+          await this.plugin.saveSettings();
+        }));
+
     containerEl.createEl('h3', { text: '操作' });
 
     new Setting(containerEl)

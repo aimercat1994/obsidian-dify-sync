@@ -11,6 +11,8 @@ export interface DifySyncSettings {
   conflictStrategy: ConflictStrategy;
   /** 按标签过滤：逗号分隔，留空=不过滤。如 "dify,public" */
   filterTags: string;
+  /** 最大并发数：同时发往 Dify 的 API 请求数（1-10） */
+  maxConcurrency: number;
 }
 
 export const DEFAULT_SETTINGS: DifySyncSettings = {
@@ -22,4 +24,5 @@ export const DEFAULT_SETTINGS: DifySyncSettings = {
   docLanguage: 'Chinese',
   conflictStrategy: 'overwrite',
   filterTags: '',
+  maxConcurrency: 3,
 };
