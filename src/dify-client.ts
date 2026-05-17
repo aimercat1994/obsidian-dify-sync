@@ -27,6 +27,18 @@ export interface DifyUpdateResponse {
   batch: string;
 }
 
+export interface DifyDocumentDetail {
+  id: string;
+  name: string;
+  text: string;
+  indexing_status: string;
+  display_status: string;
+  created_at: number;
+  updated_at: number;
+  tokens: number;
+  word_count: number;
+}
+
 export class DifyClient {
   private endpoint: string;
   private apiKey: string;
@@ -71,6 +83,23 @@ export class DifyClient {
     }
 
     return allDocs;
+  }
+
+  /** Get a single document's full detail (including text content) */
+  async getDocument(documentId: string): Promise<DifyDocumentDetail | null> {
+    const url = `${this.endpoint}/datasets/${this.datasetId}/documents/${documentId}`;
+    const resp: RequestUrlResponse = await requestUrl({
+      url,
+      method: 'GET',
+      headers: this.headers(),
+    });
+
+    if (resp.status !== 200) {
+      console.warn(`Dify Sync：获取文档详情失败 ${resp.status}: ${resp.text}`);
+      return null;
+    }
+
+    return resp.json as DifyDocumentDetail;
   }
 
   /** Create a document from text content */

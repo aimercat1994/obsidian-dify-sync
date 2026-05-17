@@ -102,6 +102,28 @@ export class SyncEngine {
     return this.mapping[path]?.docId;
   }
 
+  // ─── 冲突检测 ──────────────────────────────────────────────────
+
+  /**
+   * 检查 Dify 端文档是否被外部修改过。
+   * 拉取 Dify 文档内容 → 计算 hash → 与本地记录比对。
+   * @returns true=有冲突（Dify 端被修改过），false=无冲突或无法判断
+   */
+  private async checkDifyConflict(docId: string, localHash: string): Promise<boolean> {
+    try {
+      const detail = await this.getClient().getDocument(docId);
+      if (!detail || detail.text === undefined) {
+        // API 不返回文本内容 → 无法判断，保守处理：当作无冲突
+        return false;
+      }
+      const difyHash = await this.hashContent(detail.text);
+      return difyHash !== localHash;
+    } catch {
+      // 获取失败 → 无法判断，保守处理：当作无冲突
+      return false;
+    }
+  }
+
   // ─── 作用域判断 ────────────────────────────────────────────────
 
   private isInScope(file: TFile): boolean {
@@ -176,6 +198,16 @@ export class SyncEngine {
         if (hash === entry.contentHash) {
           console.log(`Dify Sync：跳过「${file.basename}」（内容未变化）`);
           return;
+        }
+
+        // ── 冲突检测（keep_dify 策略）──
+        if (settings.conflictStrategy === 'keep_dify') {
+          const conflict = await this.checkDifyConflict(entry.docId, entry.contentHash);
+          if (conflict) {
+            console.log(`Dify Sync：冲突跳过「${file.basename}」（Dify 端已被外部修改）`);
+            new Notice(`Dify Sync：冲突跳过「${file.basename}」`);
+            return;
+          }
         }
 
         const name = file.basename + '.' + file.extension;
@@ -405,6 +437,17 @@ export class SyncEngine {
             skipped++;
             continue;
           }
+
+          // ── 冲突检测（keep_dify 策略）──
+          if (settings.conflictStrategy === 'keep_dify') {
+            const conflict = await this.checkDifyConflict(existingEntry.docId, existingEntry.contentHash);
+            if (conflict) {
+              console.log(`Dify Sync：冲突跳过「${name}」（Dify 端已被外部修改）`);
+              skipped++;
+              continue;
+            }
+          }
+
           // 内容变了 → 更新
           await this.getClient().updateDocument(
             existingEntry.docId, name, content, settings.docLanguage

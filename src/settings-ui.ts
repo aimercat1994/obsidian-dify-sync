@@ -90,6 +90,18 @@ export class DifySyncSettingTab extends PluginSettingTab {
           }
         }));
 
+    new Setting(containerEl)
+      .setName('冲突处理')
+      .setDesc('当 Dify 端文档被外部修改时如何处理。全量同步始终以 Obsidian 为准')
+      .addDropdown(dropdown => dropdown
+        .addOption('overwrite', '覆盖 Dify（Obsidian 优先）')
+        .addOption('keep_dify', '保留 Dify 修改（跳过冲突文档）')
+        .setValue(this.plugin.settings.conflictStrategy)
+        .onChange(async (value) => {
+          this.plugin.settings.conflictStrategy = value as 'overwrite' | 'keep_dify';
+          await this.plugin.saveSettings();
+        }));
+
     containerEl.createEl('h3', { text: '操作' });
 
     new Setting(containerEl)
