@@ -1,18 +1,18 @@
 # Obsidian Dify Sync
 
-Sync your Obsidian notes to [Dify](https://dify.ai) knowledge base. Creates, updates, and deletes documents in Dify to mirror your vault — Obsidian is the source of truth.
+将 Obsidian 笔记同步到 [Dify](https://dify.ai) 知识库。以 Obsidian 为唯一数据源，自动在 Dify 中创建、更新、删除文档，保持两端一致。
 
-## Features
+## 功能
 
-- **Automatic sync** — files created/modified/deleted in Obsidian are synced to Dify in real time
-- **Full sync** — one-click push all notes to Dify, and prune stale documents on the Dify side
-- **Smart rename** — handles file renames by deleting the old Dify doc and creating a new one
-- **Folder scoping** — sync only a specific subfolder or the entire vault
-- **Manual control** — commands for syncing individual files or running a full sync
+- **自动同步** — Obsidian 中新建/修改/删除文件时，实时同步到 Dify
+- **全量同步** — 一键将所有笔记推送到 Dify，并清理 Dify 端多余文档
+- **智能重命名** — 处理文件重命名（删除旧文档 + 创建新文档，Dify 无 rename API）
+- **文件夹范围** — 可指定只同步某个子目录，或同步整个 vault
+- **手动控制** — 支持手动同步当前文件或全量同步
 
-## Installation
+## 安装
 
-### From source
+### 从源码构建
 
 ```bash
 cd /path/to/your-vault/.obsidian/plugins/
@@ -22,95 +22,95 @@ npm install
 npm run build
 ```
 
-Then enable the plugin in Obsidian: **Settings → Community plugins → Dify Sync**.
+然后在 Obsidian 中启用：**设置 → 第三方插件 → Dify Sync**。
 
-### From Obsidian Community Plugins (coming soon)
+### 从社区插件市场安装（即将上线）
 
-Once reviewed and published, you'll be able to install it directly from the Community Plugins browser.
+等审核通过后，可以直接在 Obsidian 的社区插件浏览器中搜索安装。
 
-## Configuration
+## 配置
 
-1. In Dify, go to **Knowledge → Service API** (top-right corner)
-2. Copy the **API Endpoint** (e.g. `http://your-dify-instance/v1`)
-3. Click **API Key** → create a new key and copy it
-4. Open the knowledge base you want to sync to, copy its **Knowledge Base ID** from the URL
+1. 在 Dify 中，进入 **知识库 → Service API**（右上角）
+2. 复制 **API 端点**（如 `http://你的-Dify-地址/v1`）
+3. 点击 **API Key** → 创建新 Key 并复制
+4. 打开要同步的目标知识库，从 URL 中复制 **知识库 ID**
 
-5. In Obsidian, go to **Settings → Dify Sync** and fill in:
+5. 在 Obsidian 中进入 **设置 → Dify Sync**，填写：
 
-| Setting | Description |
-|---------|-------------|
-| Dify API Endpoint | Your Dify base URL, e.g. `http://192.168.1.10:1180/v1` |
-| Knowledge Base API Key | The API key from Dify's Service API panel |
-| Knowledge Base ID | The dataset UUID |
-| Sync Folder | Vault folder to sync (`/` = entire vault) |
-| Document Language | Language hint for Dify processing |
-| Auto Sync | Enable real-time sync on file changes |
+| 设置项 | 说明 |
+|--------|------|
+| Dify API Endpoint | Dify 基础地址，如 `http://192.168.1.10:1180/v1` |
+| Knowledge Base API Key | Dify Service API 面板创建的 Key |
+| Knowledge Base ID | 知识库 UUID |
+| Sync Folder | 要同步的 vault 文件夹（`/` = 整个 vault） |
+| Document Language | 文档语言，用于 Dify 分词优化 |
+| Auto Sync | 开启后文件变化时自动同步 |
 
-6. Click **Sync Now** to perform the initial full sync
+6. 点击 **Sync Now** 执行首次全量同步
 
-## Usage
+## 使用
 
-### Commands
+### 命令
 
-| Command | Action |
-|---------|--------|
-| `Dify Sync: Full sync to Dify` | Push all notes in the configured folder to Dify, remove stale docs |
-| `Dify Sync: Sync current file` | Sync the currently open note |
-| `Dify Sync: Test connection` | Verify that the Dify API is reachable |
+| 命令 | 作用 |
+|------|------|
+| `Dify Sync: Full sync to Dify` | 全量同步：推送所有笔记到 Dify，删除 Dify 中多余的文档 |
+| `Dify Sync: Sync current file` | 同步当前打开的笔记 |
+| `Dify Sync: Test connection` | 测试 Dify API 连通性 |
 
-### Auto Sync
+### 自动同步
 
-When enabled, the plugin listens to vault events:
+开启后，插件监听 vault 事件：
 
-- **Create/Modify** → creates or updates the document in Dify
-- **Delete** → removes the document from Dify
-- **Rename** → deletes the old document and creates a new one (Dify has no rename API)
+- **新建/修改** → 在 Dify 中创建或更新文档
+- **删除** → 从 Dify 中删除对应文档
+- **重命名** → 删除旧文档 + 创建新文档
 
-## How It Works
+## 工作原理
 
 ```
-Obsidian Vault (source of truth)
+Obsidian Vault（数据源）
          │
-         ├─ create/modify → POST /v1/datasets/{id}/document/create-by-text
-         │                  POST /v1/datasets/{id}/documents/{docId}/update-by-text
+         ├─ 新建/修改 → POST /v1/datasets/{id}/document/create-by-text
+         │              POST /v1/datasets/{id}/documents/{docId}/update-by-text
          │
-         ├─ delete ───────→ DELETE /v1/datasets/{id}/documents/{docId}
+         ├─ 删除 ────→ DELETE /v1/datasets/{id}/documents/{docId}
          │
-         └─ rename ───────→ DELETE old + POST new
+         └─ 重命名 ──→ DELETE 旧 + POST 新
 ```
 
-A local `path → dify_document_id` mapping is stored in the plugin's `data.json` to avoid creating duplicates.
+插件内部维护一个 `path → dify_document_id` 的映射表，存储在 `data.json` 中，避免重复创建。
 
-### Dify API Endpoints Used
+### 使用的 Dify API
 
-| Operation | Method | Endpoint |
-|-----------|--------|----------|
-| List documents | `GET` | `/datasets/{dataset_id}/documents` |
-| Create document | `POST` | `/datasets/{dataset_id}/document/create-by-text` |
-| Update document | `POST` | `/datasets/{dataset_id}/documents/{document_id}/update-by-text` |
-| Delete document | `DELETE` | `/datasets/{dataset_id}/documents/{document_id}` |
+| 操作 | 方法 | 端点 |
+|------|------|------|
+| 列出文档 | `GET` | `/datasets/{dataset_id}/documents` |
+| 创建文档 | `POST` | `/datasets/{dataset_id}/document/create-by-text` |
+| 更新文档 | `POST` | `/datasets/{dataset_id}/documents/{document_id}/update-by-text` |
+| 删除文档 | `DELETE` | `/datasets/{dataset_id}/documents/{document_id}` |
 
-## Requirements
+## 环境要求
 
-- Obsidian **v1.5.0** or later
-- Dify (self-hosted or cloud) with a knowledge base created
-- Node.js 18+ (for building from source)
+- Obsidian **v1.5.0** 或更高
+- Dify（自部署或云版本），已创建知识库
+- Node.js 18+（仅源码构建时需要）
 
-## Development
+## 开发
 
 ```bash
-# Install dependencies
+# 安装依赖
 npm install
 
-# Watch mode (auto-rebuild on changes)
+# 开发模式（自动监听变化并编译）
 npm run dev
 
-# Production build
+# 生产构建
 npm run build
 ```
 
-Use [Hot-Reload](https://github.com/pjeby/hot-reload) plugin for automatic reloading during development.
+开发时建议安装 [Hot-Reload](https://github.com/pjeby/hot-reload) 插件，修改代码后自动重载。
 
-## License
+## 许可证
 
 MIT
