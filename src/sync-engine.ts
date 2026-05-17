@@ -60,6 +60,23 @@ export class SyncEngine {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
+  // ─── 进度显示 ──────────────────────────────────────────────────
+
+  /** 更新 Notice 文字和状态栏进度 */
+  private updateProgress(notice: Notice, text: string): void {
+    notice.setMessage(text);
+    if (this.plugin.statusBarEl) {
+      this.plugin.statusBarEl.setText(`📡 ${text}`);
+    }
+  }
+
+  /** 重置状态栏为默认 */
+  private resetStatusBar(): void {
+    if (this.plugin.statusBarEl) {
+      this.plugin.statusBarEl.setText('📡 Dify 同步');
+    }
+  }
+
   // ─── 映射管理 ──────────────────────────────────────────────────
 
   async loadMapping(): Promise<void> {
@@ -335,10 +352,14 @@ export class SyncEngine {
 
       const obsidianNames = new Set<string>();
       const newMapping: PathMappingV2 = {};
+      const total = files.length;
 
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
         const name = file.basename + '.' + file.extension;
         obsidianNames.add(name);
+
+        this.updateProgress(notice, `全量同步中… ${i + 1}/${total}`);
 
         // 仅当 mapping 中的文档 ID 在当前知识库确实存在时才复用
         const existingEntry = this.mapping[file.path];
@@ -388,6 +409,7 @@ export class SyncEngine {
       new Notice('Dify Sync：全量同步失败，详见控制台');
     } finally {
       this.syncing = false;
+      this.resetStatusBar();
     }
   }
 
@@ -421,10 +443,14 @@ export class SyncEngine {
         new Notice('Dify Sync：没有需要同步的文件');
         this.lastSyncTime = syncStartTime;
         await this.saveMapping();
+        this.resetStatusBar();
         return;
       }
 
-      for (const file of changed) {
+      const total = changed.length;
+      for (let i = 0; i < changed.length; i++) {
+        const file = changed[i];
+        this.updateProgress(notice, `增量同步中… ${i + 1}/${total}`);
         const name = file.basename + '.' + file.extension;
         const content = await this.plugin.app.vault.read(file);
         const hash = await this.hashContent(content);
@@ -475,6 +501,7 @@ export class SyncEngine {
       new Notice('Dify Sync：增量同步失败，详见控制台');
     } finally {
       this.syncing = false;
+      this.resetStatusBar();
     }
   }
 }

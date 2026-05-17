@@ -7,6 +7,8 @@ export default class DifySyncPlugin extends Plugin {
   settings!: DifySyncSettings;
   syncEngine!: SyncEngine;
   private eventRefs: (() => void)[] = [];
+  /** 状态栏文本元素，供同步引擎更新进度 */
+  statusBarEl!: HTMLSpanElement;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -54,7 +56,7 @@ export default class DifySyncPlugin extends Plugin {
     }
 
     const statusBar = this.addStatusBarItem();
-    statusBar.createEl('span', { text: '📡 Dify 同步' });
+    this.statusBarEl = statusBar.createEl('span', { text: '📡 Dify 同步' });
   }
 
   onunload(): void {
