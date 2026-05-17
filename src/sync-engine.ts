@@ -196,8 +196,10 @@ export class SyncEngine {
       }
 
       const difyByName = new Map<string, string>();
+      const difyDocIds = new Set<string>();
       for (const d of difyDocs) {
         difyByName.set(d.name, d.id);
+        difyDocIds.add(d.id);
       }
 
       const files = this.plugin.app.vault.getMarkdownFiles()
@@ -210,7 +212,10 @@ export class SyncEngine {
         const name = file.basename + '.' + file.extension;
         obsidianNames.add(name);
 
-        const existingDocId = difyByName.get(name) || this.mapping[file.path];
+        // 仅当 mapping 中的文档 ID 在当前知识库确实存在时才复用
+        const mappingDocId = this.mapping[file.path];
+        const existingDocId = difyByName.get(name) ||
+          (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
         const content = await this.plugin.app.vault.read(file);
 
         if (existingDocId) {
