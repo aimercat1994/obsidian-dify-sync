@@ -77,6 +77,18 @@ export class SyncEngine {
     }
   }
 
+  // ─── 文档命名 ──────────────────────────────────────────────────
+
+  /** 路径级文档名（v2.0+）：用 Obsidian 全路径作为 Dify 文档名，同名文件不冲突 */
+  private getDocName(file: TFile): string {
+    return file.path;
+  }
+
+  /** 旧版文档名兼容（v1.x）：仅文件名，用于匹配未迁移的旧 Dify 文档 */
+  private getOldDocName(file: TFile): string {
+    return file.basename + '.' + file.extension;
+  }
+
   // ─── 映射管理 ──────────────────────────────────────────────────
 
   async loadMapping(): Promise<void> {
@@ -143,18 +155,62 @@ export class SyncEngine {
 
   // ─── 作用域判断 ────────────────────────────────────────────────
 
-  private isInScope(file: TFile): boolean {
-    const folder = this.plugin.settings.syncFolder;
-    if (folder === '/' || folder === '') return true;
-    const normalized = folder.endsWith('/') ? folder : folder + '/';
-    return file.path.startsWith(normalized);
+  /** 读取文件的 frontmatter 标签列表 */
+  private getFileTags(file: TFile): string[] {
+    const cache = this.plugin.app.metadataCache.getFileCache(file);
+    if (!cache) return [];
+    const tags: string[] = [];
+    // frontmatter tags
+    if (cache.frontmatter?.tags) {
+      const fmTags = cache.frontmatter.tags;
+      if (Array.isArray(fmTags)) {
+        for (const t of fmTags) {
+          if (typeof t === 'string') tags.push(t.replace(/^#/, ''));
+        }
+      } else if (typeof fmTags === 'string') {
+        tags.push(fmTags.replace(/^#/, ''));
+      }
+    }
+    // inline tags (#tag in body)
+    if (cache.tags) {
+      for (const t of cache.tags) {
+        const tag = t.tag.replace(/^#/, '');
+        if (!tags.includes(tag)) tags.push(tag);
+      }
+    }
+    return tags;
+  }
+
+  /** 综合判断：文件夹 + 标签过滤 */
+  private shouldSync(file: TFile): boolean {
+    const settings = this.plugin.settings;
+
+    // 文件夹过滤
+    const folder = settings.syncFolder;
+    if (folder !== '/' && folder !== '') {
+      const normalized = folder.endsWith('/') ? folder : folder + '/';
+      if (!file.path.startsWith(normalized)) return false;
+    }
+
+    // 标签过滤
+    const filterTags = settings.filterTags.trim();
+    if (!filterTags) return true;
+
+    const requiredTags = filterTags.split(',')
+      .map(t => t.trim().replace(/^#/, ''))
+      .filter(t => t.length > 0);
+
+    if (requiredTags.length === 0) return true;
+
+    const fileTags = this.getFileTags(file);
+    return requiredTags.every(rt => fileTags.includes(rt));
   }
 
   // ─── 事件处理 ──────────────────────────────────────────────────
 
   /** 新建文件 → 在 Dify 中创建文档 */
   async onFileCreated(file: TFile): Promise<void> {
-    if (this.syncing || !this.isInScope(file)) return;
+    if (this.syncing || !this.shouldSync(file)) return;
     if (this.mapping[file.path]) return;
 
     const settings = this.plugin.settings;
@@ -163,7 +219,7 @@ export class SyncEngine {
     try {
       this.syncing = true;
       const content = await this.plugin.app.vault.read(file);
-      const name = file.basename + '.' + file.extension;
+      const name = this.getDocName(file);
       const hash = await this.hashContent(content);
 
       const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
@@ -181,7 +237,7 @@ export class SyncEngine {
 
   /** 文件修改 → 防抖 + 内容比对后才决定是否上传 */
   async onFileModified(file: TFile): Promise<void> {
-    if (!this.isInScope(file)) return;
+    if (!this.shouldSync(file)) return;
 
     const entry = this.mapping[file.path];
     if (!entry) {
@@ -227,7 +283,7 @@ export class SyncEngine {
           }
         }
 
-        const name = file.basename + '.' + file.extension;
+        const name = this.getDocName(file);
         await this.getClient().updateDocument(entry.docId, name, content, settings.docLanguage);
         entry.contentHash = hash;
         await this.saveMapping();
@@ -246,7 +302,7 @@ export class SyncEngine {
 
   /** 文件删除 → 删除 Dify 文档 */
   async onFileDeleted(file: TFile): Promise<void> {
-    if (this.syncing || !this.isInScope(file)) return;
+    if (this.syncing || !this.shouldSync(file)) return;
 
     const docId = this.docIdFor(file.path);
     if (!docId) return;
@@ -275,7 +331,7 @@ export class SyncEngine {
 
     const oldEntry = this.mapping[oldPath];
     const settings = this.plugin.settings;
-    const inScope = this.isInScope(file);
+    const inScope = this.shouldSync(file);
     const wasInScope = (() => {
       const folder = settings.syncFolder;
       if (folder === '/' || folder === '') return true;
@@ -295,7 +351,7 @@ export class SyncEngine {
 
       if (inScope && file instanceof TFile) {
         const content = await this.plugin.app.vault.read(file);
-        const name = file.basename + '.' + file.extension;
+        const name = this.getDocName(file);
         const hash = await this.hashContent(content);
         const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
         this.mapping[file.path] = { docId: resp.document.id, contentHash: hash };
@@ -340,32 +396,41 @@ export class SyncEngine {
         return;
       }
 
-      const difyByName = new Map<string, string>();
+      // 双索引：路径名 + 旧版文件名（向后兼容）
+      const difyByPath = new Map<string, string>();
+      const difyByOldName = new Map<string, string>();
       const difyDocIds = new Set<string>();
       for (const d of difyDocs) {
-        difyByName.set(d.name, d.id);
+        difyByPath.set(d.name, d.id);
         difyDocIds.add(d.id);
+        // 如果 Dify 文档名不含 /，可能是旧版格式，也注册到旧名索引
+        if (!d.name.includes('/')) {
+          difyByOldName.set(d.name, d.id);
+        }
       }
 
       const files = this.plugin.app.vault.getMarkdownFiles()
-        .filter(f => this.isInScope(f));
+        .filter(f => this.shouldSync(f));
 
-      const obsidianNames = new Set<string>();
+      const obsidianPathNames = new Set<string>();
       const newMapping: PathMappingV2 = {};
       const total = files.length;
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const name = file.basename + '.' + file.extension;
-        obsidianNames.add(name);
+        const pathName = this.getDocName(file);
+        const oldName = this.getOldDocName(file);
+        obsidianPathNames.add(pathName);
 
         this.updateProgress(notice, `全量同步中… ${i + 1}/${total}`);
 
-        // 仅当 mapping 中的文档 ID 在当前知识库确实存在时才复用
+        // 匹配优先级：路径名 → 旧版文件名 → mapping ID（已验证）
         const existingEntry = this.mapping[file.path];
         const mappingDocId = existingEntry?.docId;
-        const existingDocId = difyByName.get(name) ||
-          (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
+        const existingDocId = difyByPath.get(pathName)
+          || difyByOldName.get(oldName)
+          || (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
+
         const content = await this.plugin.app.vault.read(file);
         const hash = await this.hashContent(content);
 
@@ -376,19 +441,20 @@ export class SyncEngine {
             skipped++;
             continue;
           }
-          await this.getClient().updateDocument(existingDocId, name, content, settings.docLanguage);
+          // 更新文档（同时用路径名，如果旧版 Dify 文档名不含 / 则顺便完成迁移）
+          await this.getClient().updateDocument(existingDocId, pathName, content, settings.docLanguage);
           newMapping[file.path] = { docId: existingDocId, contentHash: hash };
           updated++;
         } else {
-          const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
+          const resp = await this.getClient().createDocument(pathName, content, settings.docLanguage);
           newMapping[file.path] = { docId: resp.document.id, contentHash: hash };
           created++;
         }
       }
 
-      // 清理 Dify 端多余文档
-      difyByName.forEach(async (docId, name) => {
-        if (!obsidianNames.has(name)) {
+      // 清理 Dify 端多余文档（按路径名比对）
+      difyByPath.forEach(async (docId, name) => {
+        if (!obsidianPathNames.has(name)) {
           try {
             await this.getClient().deleteDocument(docId);
             deleted++;
@@ -433,7 +499,7 @@ export class SyncEngine {
 
     try {
       const files = this.plugin.app.vault.getMarkdownFiles()
-        .filter(f => this.isInScope(f));
+        .filter(f => this.shouldSync(f));
 
       // 按 mtime 过滤：只处理上次同步后修改过的文件
       const changed = files.filter(f => f.stat.mtime > this.lastSyncTime);
@@ -451,7 +517,7 @@ export class SyncEngine {
       for (let i = 0; i < changed.length; i++) {
         const file = changed[i];
         this.updateProgress(notice, `增量同步中… ${i + 1}/${total}`);
-        const name = file.basename + '.' + file.extension;
+        const name = this.getDocName(file);
         const content = await this.plugin.app.vault.read(file);
         const hash = await this.hashContent(content);
 

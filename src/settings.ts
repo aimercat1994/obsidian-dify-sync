@@ -9,6 +9,8 @@ export interface DifySyncSettings {
   docLanguage: string;
   /** 冲突处理策略：overwrite=Obsidian 胜出，keep_dify=Dify 有修改时跳过 */
   conflictStrategy: ConflictStrategy;
+  /** 按标签过滤：逗号分隔，留空=不过滤。如 "dify,public" */
+  filterTags: string;
 }
 
 export const DEFAULT_SETTINGS: DifySyncSettings = {
@@ -19,4 +21,5 @@ export const DEFAULT_SETTINGS: DifySyncSettings = {
   autoSync: false,
   docLanguage: 'Chinese',
   conflictStrategy: 'overwrite',
+  filterTags: '',
 };

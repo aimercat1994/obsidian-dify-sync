@@ -102,6 +102,17 @@ export class DifySyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(containerEl)
+      .setName('标签过滤')
+      .setDesc('只同步包含指定标签的笔记。多个标签用逗号分隔（需同时满足），留空=不过滤。例如 "dify,public"')
+      .addText(text => text
+        .setPlaceholder('dify')
+        .setValue(this.plugin.settings.filterTags)
+        .onChange(async (value) => {
+          this.plugin.settings.filterTags = value;
+          await this.plugin.saveSettings();
+        }));
+
     containerEl.createEl('h3', { text: '操作' });
 
     new Setting(containerEl)
