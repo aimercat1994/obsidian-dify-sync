@@ -1,0 +1,9 @@
+/**
+ * Dify Sync plugin for Obsidian
+ * Minimal styles — relies on Obsidian's built-in theme.
+ */
+
+.dify-sync-status {
+  color: var(--text-muted);
+  font-size: 12px;
+}

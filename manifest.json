@@ -1,0 +1,10 @@
+{
+  "id": "dify-sync",
+  "name": "Dify Sync",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Sync Obsidian notes to Dify knowledge base. Creates, updates, and deletes documents in Dify to mirror your vault.",
+  "author": "aimercat",
+  "authorUrl": "https://github.com/aimercat1994",
+  "isDesktopOnly": false
+}
