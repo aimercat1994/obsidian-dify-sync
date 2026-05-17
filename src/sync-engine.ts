@@ -2,15 +2,31 @@ import { Notice, TFile } from 'obsidian';
 import { DifyClient } from './dify-client';
 import type DifySyncPlugin from './main';
 
-interface PathMapping {
-  [obsidianPath: string]: string;
+interface PathEntry {
+  docId: string;
+  contentHash: string;
 }
+
+interface PathMapping {
+  [obsidianPath: string]: string;  // old format
+}
+
+interface PathMappingV2 {
+  [obsidianPath: string]: PathEntry;
+}
+
+/** Debounce 间隔（毫秒），期间内多次 modify 只触发一次上传 */
+const MODIFY_DEBOUNCE_MS = 5000;
 
 export class SyncEngine {
   private plugin: DifySyncPlugin;
   private client: DifyClient | null = null;
-  private mapping: PathMapping = {};
+  private mapping: PathMappingV2 = {};
   private syncing = false;
+  /** 防抖计时器：file.path → timeoutId */
+  private debounceTimers = new Map<string, number>();
+  /** 防抖期间有文件的 modify 被触发过 */
+  private pendingModify = new Set<string>();
 
   constructor(plugin: DifySyncPlugin) {
     this.plugin = plugin;
@@ -31,6 +47,56 @@ export class SyncEngine {
     this.client = null;
   }
 
+  // ─── 内容 Hash ─────────────────────────────────────────────────
+
+  /** 对文本内容计算 SHA-256 hex 摘要 */
+  private async hashContent(content: string): Promise<string> {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(content);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // ─── 映射管理 ──────────────────────────────────────────────────
+
+  async loadMapping(): Promise<void> {
+    const data = (await this.plugin.loadData()) as Record<string, unknown> | null;
+    if (!data || !data.mapping) return;
+
+    const raw = data.mapping as Record<string, unknown>;
+
+    // 检测旧格式 {path: "uuid"} 并升级
+    const keys = Object.keys(raw);
+    if (keys.length > 0) {
+      const first = raw[keys[0]];
+      if (typeof first === 'string') {
+        // 旧格式 → 迁移
+        const old = raw as unknown as PathMapping;
+        for (const [path, docId] of Object.entries(old)) {
+          this.mapping[path] = { docId, contentHash: '' };
+        }
+        console.log(`Dify Sync：已从旧格式迁移 ${keys.length} 条映射`);
+        await this.saveMapping();
+        return;
+      }
+    }
+
+    // 新格式
+    this.mapping = raw as unknown as PathMappingV2;
+  }
+
+  async saveMapping(): Promise<void> {
+    await this.plugin.saveData({ mapping: this.mapping });
+  }
+
+  /** 取出 docId，不存在返回 undefined */
+  private docIdFor(path: string): string | undefined {
+    return this.mapping[path]?.docId;
+  }
+
+  // ─── 作用域判断 ────────────────────────────────────────────────
+
   private isInScope(file: TFile): boolean {
     const folder = this.plugin.settings.syncFolder;
     if (folder === '/' || folder === '') return true;
@@ -38,16 +104,7 @@ export class SyncEngine {
     return file.path.startsWith(normalized);
   }
 
-  async loadMapping(): Promise<void> {
-    const data = (await this.plugin.loadData()) as Record<string, unknown> | null;
-    if (data && data.mapping) {
-      this.mapping = data.mapping as PathMapping;
-    }
-  }
-
-  async saveMapping(): Promise<void> {
-    await this.plugin.saveData({ mapping: this.mapping });
-  }
+  // ─── 事件处理 ──────────────────────────────────────────────────
 
   /** 新建文件 → 在 Dify 中创建文档 */
   async onFileCreated(file: TFile): Promise<void> {
@@ -61,9 +118,10 @@ export class SyncEngine {
       this.syncing = true;
       const content = await this.plugin.app.vault.read(file);
       const name = file.basename + '.' + file.extension;
+      const hash = await this.hashContent(content);
 
       const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
-      this.mapping[file.path] = resp.document.id;
+      this.mapping[file.path] = { docId: resp.document.id, contentHash: hash };
       await this.saveMapping();
 
       new Notice(`Dify Sync：已创建「${name}」`);
@@ -75,39 +133,66 @@ export class SyncEngine {
     }
   }
 
-  /** 文件修改 → 更新 Dify 文档 */
+  /** 文件修改 → 防抖 + 内容比对后才决定是否上传 */
   async onFileModified(file: TFile): Promise<void> {
-    if (this.syncing || !this.isInScope(file)) return;
+    if (!this.isInScope(file)) return;
 
-    const docId = this.mapping[file.path];
-    if (!docId) {
+    const entry = this.mapping[file.path];
+    if (!entry) {
+      // 还没建过映射 → 当新建处理（不防抖）
       await this.onFileCreated(file);
       return;
     }
 
-    const settings = this.plugin.settings;
-    if (!settings.endpoint || !settings.apiKey || !settings.datasetId) return;
-
-    try {
-      this.syncing = true;
-      const content = await this.plugin.app.vault.read(file);
-      const name = file.basename + '.' + file.extension;
-
-      await this.getClient().updateDocument(docId, name, content, settings.docLanguage);
-      console.log(`Dify Sync：已更新「${name}」`);
-    } catch (e) {
-      console.error('Dify Sync：更新失败', file.path, e);
-      new Notice(`Dify Sync：更新「${file.basename}」失败`);
-    } finally {
-      this.syncing = false;
+    // ── 防抖：如果该文件已经在等待处理，取消旧的定时器 ──
+    this.pendingModify.add(file.path);
+    const existingTimer = this.debounceTimers.get(file.path);
+    if (existingTimer !== undefined) {
+      window.clearTimeout(existingTimer);
     }
+
+    const timerId = window.setTimeout(async () => {
+      this.debounceTimers.delete(file.path);
+      this.pendingModify.delete(file.path);
+
+      if (this.syncing) return;
+
+      const settings = this.plugin.settings;
+      if (!settings.endpoint || !settings.apiKey || !settings.datasetId) return;
+
+      try {
+        this.syncing = true;
+        const content = await this.plugin.app.vault.read(file);
+        const hash = await this.hashContent(content);
+
+        // 内容没变 → 跳过
+        if (hash === entry.contentHash) {
+          console.log(`Dify Sync：跳过「${file.basename}」（内容未变化）`);
+          return;
+        }
+
+        const name = file.basename + '.' + file.extension;
+        await this.getClient().updateDocument(entry.docId, name, content, settings.docLanguage);
+        entry.contentHash = hash;
+        await this.saveMapping();
+
+        console.log(`Dify Sync：已更新「${name}」`);
+      } catch (e) {
+        console.error('Dify Sync：更新失败', file.path, e);
+        new Notice(`Dify Sync：更新「${file.basename}」失败`);
+      } finally {
+        this.syncing = false;
+      }
+    }, MODIFY_DEBOUNCE_MS);
+
+    this.debounceTimers.set(file.path, timerId);
   }
 
   /** 文件删除 → 删除 Dify 文档 */
   async onFileDeleted(file: TFile): Promise<void> {
     if (this.syncing || !this.isInScope(file)) return;
 
-    const docId = this.mapping[file.path];
+    const docId = this.docIdFor(file.path);
     if (!docId) return;
 
     const settings = this.plugin.settings;
@@ -132,7 +217,7 @@ export class SyncEngine {
   async onFileRenamed(file: TFile, oldPath: string): Promise<void> {
     if (this.syncing) return;
 
-    const oldDocId = this.mapping[oldPath];
+    const oldEntry = this.mapping[oldPath];
     const settings = this.plugin.settings;
     const inScope = this.isInScope(file);
     const wasInScope = (() => {
@@ -147,16 +232,17 @@ export class SyncEngine {
     try {
       this.syncing = true;
 
-      if (oldDocId && wasInScope) {
-        await this.getClient().deleteDocument(oldDocId);
+      if (oldEntry && wasInScope) {
+        await this.getClient().deleteDocument(oldEntry.docId);
         delete this.mapping[oldPath];
       }
 
       if (inScope && file instanceof TFile) {
         const content = await this.plugin.app.vault.read(file);
         const name = file.basename + '.' + file.extension;
+        const hash = await this.hashContent(content);
         const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
-        this.mapping[file.path] = resp.document.id;
+        this.mapping[file.path] = { docId: resp.document.id, contentHash: hash };
       }
 
       await this.saveMapping();
@@ -168,6 +254,8 @@ export class SyncEngine {
       this.syncing = false;
     }
   }
+
+  // ─── 全量同步 ──────────────────────────────────────────────────
 
   /** 全量同步 */
   async fullSync(): Promise<void> {
@@ -181,6 +269,7 @@ export class SyncEngine {
     const notice = new Notice('Dify Sync：正在全量同步…', 0);
     let created = 0;
     let updated = 0;
+    let skipped = 0;
     let deleted = 0;
 
     try {
@@ -206,31 +295,38 @@ export class SyncEngine {
         .filter(f => this.isInScope(f));
 
       const obsidianNames = new Set<string>();
-      const newMapping: PathMapping = {};
+      const newMapping: PathMappingV2 = {};
 
       for (const file of files) {
         const name = file.basename + '.' + file.extension;
         obsidianNames.add(name);
 
         // 仅当 mapping 中的文档 ID 在当前知识库确实存在时才复用
-        const mappingDocId = this.mapping[file.path];
+        const existingEntry = this.mapping[file.path];
+        const mappingDocId = existingEntry?.docId;
         const existingDocId = difyByName.get(name) ||
           (mappingDocId && difyDocIds.has(mappingDocId) ? mappingDocId : undefined);
         const content = await this.plugin.app.vault.read(file);
+        const hash = await this.hashContent(content);
 
         if (existingDocId) {
+          // 内容没变 → 跳过
+          if (existingEntry && hash === existingEntry.contentHash) {
+            newMapping[file.path] = existingEntry;
+            skipped++;
+            continue;
+          }
           await this.getClient().updateDocument(existingDocId, name, content, settings.docLanguage);
+          newMapping[file.path] = { docId: existingDocId, contentHash: hash };
           updated++;
         } else {
           const resp = await this.getClient().createDocument(name, content, settings.docLanguage);
-          newMapping[file.path] = resp.document.id;
+          newMapping[file.path] = { docId: resp.document.id, contentHash: hash };
           created++;
-          continue;
         }
-
-        newMapping[file.path] = existingDocId;
       }
 
+      // 清理 Dify 端多余文档
       difyByName.forEach(async (docId, name) => {
         if (!obsidianNames.has(name)) {
           try {
@@ -246,7 +342,7 @@ export class SyncEngine {
       await this.saveMapping();
 
       notice.hide();
-      new Notice(`Dify Sync：新增 ${created}，更新 ${updated}，删除 ${deleted}`);
+      new Notice(`Dify Sync：新增 ${created}，更新 ${updated}，跳过 ${skipped}，删除 ${deleted}`);
     } catch (e) {
       notice.hide();
       console.error('Dify Sync：全量同步失败', e);
