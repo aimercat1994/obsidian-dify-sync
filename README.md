@@ -12,6 +12,13 @@
 
 ## 安装
 
+### 通过 BRAT 安装（推荐）
+
+1. 确保已安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 插件
+2. 打开 BRAT 设置 → **Add Beta plugin**
+3. 填入仓库地址：`https://github.com/aimercat1994/obsidian-dify-sync`
+4. 回到 **第三方插件** 启用 **Dify Sync**
+
 ### 从源码构建
 
 ```bash
@@ -54,9 +61,9 @@ npm run build
 
 | 命令 | 作用 |
 |------|------|
-| `Dify Sync: Full sync to Dify` | 全量同步：推送所有笔记到 Dify，删除 Dify 中多余的文档 |
-| `Dify Sync: Sync current file` | 同步当前打开的笔记 |
-| `Dify Sync: Test connection` | 测试 Dify API 连通性 |
+| `Dify Sync：全量同步到 Dify` | 推送所有笔记到 Dify，删除 Dify 中多余的文档 |
+| `Dify Sync：同步当前文件到 Dify` | 同步当前打开的笔记 |
+| `Dify Sync：测试 Dify 连接` | 测试 Dify API 连通性 |
 
 ### 自动同步
 
