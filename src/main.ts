@@ -23,6 +23,12 @@ export default class DifySyncPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'incremental-sync',
+      name: '增量同步到 Dify',
+      callback: () => this.syncEngine.incrementalSync(),
+    });
+
+    this.addCommand({
       id: 'sync-current-file',
       name: '同步当前文件到 Dify',
       editorCallback: async (_editor, view) => {

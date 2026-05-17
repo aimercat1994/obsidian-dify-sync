@@ -23,6 +23,8 @@ export class SyncEngine {
   private client: DifyClient | null = null;
   private mapping: PathMappingV2 = {};
   private syncing = false;
+  /** 上次同步时间戳（毫秒），用于增量同步 */
+  private lastSyncTime = 0;
   /** 防抖计时器：file.path → timeoutId */
   private debounceTimers = new Map<string, number>();
   /** 防抖期间有文件的 modify 被触发过 */
@@ -84,10 +86,15 @@ export class SyncEngine {
 
     // 新格式
     this.mapping = raw as unknown as PathMappingV2;
+
+    // 加载上次同步时间
+    if (typeof data.lastSyncTime === 'number') {
+      this.lastSyncTime = data.lastSyncTime;
+    }
   }
 
   async saveMapping(): Promise<void> {
-    await this.plugin.saveData({ mapping: this.mapping });
+    await this.plugin.saveData({ mapping: this.mapping, lastSyncTime: this.lastSyncTime });
   }
 
   /** 取出 docId，不存在返回 undefined */
@@ -347,6 +354,82 @@ export class SyncEngine {
       notice.hide();
       console.error('Dify Sync：全量同步失败', e);
       new Notice('Dify Sync：全量同步失败，详见控制台');
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  // ─── 增量同步 ──────────────────────────────────────────────────
+
+  /** 增量同步：仅处理上次同步后修改过的文件 */
+  async incrementalSync(): Promise<void> {
+    const settings = this.plugin.settings;
+    if (!settings.endpoint || !settings.apiKey || !settings.datasetId) {
+      new Notice('Dify Sync：请先配置 API 端点和 Key');
+      return;
+    }
+
+    this.syncing = true;
+    const notice = new Notice('Dify Sync：正在增量同步…', 0);
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    const syncStartTime = Date.now();
+
+    try {
+      const files = this.plugin.app.vault.getMarkdownFiles()
+        .filter(f => this.isInScope(f));
+
+      // 按 mtime 过滤：只处理上次同步后修改过的文件
+      const changed = files.filter(f => f.stat.mtime > this.lastSyncTime);
+
+      if (changed.length === 0) {
+        notice.hide();
+        new Notice('Dify Sync：没有需要同步的文件');
+        this.lastSyncTime = syncStartTime;
+        await this.saveMapping();
+        return;
+      }
+
+      for (const file of changed) {
+        const name = file.basename + '.' + file.extension;
+        const content = await this.plugin.app.vault.read(file);
+        const hash = await this.hashContent(content);
+
+        const existingEntry = this.mapping[file.path];
+
+        if (existingEntry) {
+          // 内容没变 → 跳过（可能是被 Obsidian 自动保存触发过 mtime 更新）
+          if (hash === existingEntry.contentHash) {
+            skipped++;
+            continue;
+          }
+          // 内容变了 → 更新
+          await this.getClient().updateDocument(
+            existingEntry.docId, name, content, settings.docLanguage
+          );
+          existingEntry.contentHash = hash;
+          updated++;
+        } else {
+          // 新文件 → 创建
+          const resp = await this.getClient().createDocument(
+            name, content, settings.docLanguage
+          );
+          this.mapping[file.path] = { docId: resp.document.id, contentHash: hash };
+          created++;
+        }
+      }
+
+      this.lastSyncTime = syncStartTime;
+      await this.saveMapping();
+
+      notice.hide();
+      new Notice(`Dify Sync：新增 ${created}，更新 ${updated}，跳过 ${skipped}`);
+    } catch (e) {
+      notice.hide();
+      console.error('Dify Sync：增量同步失败', e);
+      new Notice('Dify Sync：增量同步失败，详见控制台');
     } finally {
       this.syncing = false;
     }
